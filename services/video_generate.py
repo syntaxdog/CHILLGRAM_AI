@@ -1,5 +1,4 @@
 # services/video_generate.py
-
 from __future__ import annotations
 
 import os
@@ -10,6 +9,7 @@ import mimetypes
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List
+
 import requests
 from PIL import Image
 from fastapi import UploadFile, HTTPException
@@ -20,13 +20,24 @@ import replicate
 
 
 # =========================================================
+# Path / Storage
+# =========================================================
+BASE_DIR = Path("ai")  # ✅ 저장 루트: ai/{product_id}/...
+
+
+def _ensure_product_dir(product_id: int) -> Path:
+    """
+    main.py에서 ensure를 갖고 있지만,
+    service에서 import하면 순환참조 위험이 있어서 여기서 독립적으로 처리.
+    """
+    d = BASE_DIR / str(product_id)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+# =========================================================
 # Helpers
 # =========================================================
-def _ensure_dir(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path
-
-
 def _download(url: str, out_path: Path) -> Path:
     r = requests.get(url, stream=True, timeout=600)
     r.raise_for_status()
@@ -40,11 +51,15 @@ def _download(url: str, out_path: Path) -> Path:
 def _ffprobe_duration(path: str) -> float:
     cmd = [
         "ffprobe",
-        "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        path
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        path,
     ]
     out = subprocess.check_output(cmd).decode().strip()
     return float(out)
@@ -69,25 +84,33 @@ def _concat_with_xfade(video_paths: List[str], out_path: str, fade: float = 0.5)
 
     filters = []
     offset = durs[0] - fade
-    filters.append(f"[0:v][1:v]xfade=transition=fade:duration={fade}:offset={offset}[v01]")
+    filters.append(
+        f"[0:v][1:v]xfade=transition=fade:duration={fade}:offset={offset}[v01]"
+    )
 
     total = durs[0] + durs[1]
     prev_label = "v01"
 
     for i in range(2, len(video_paths)):
         offset = total - fade * (i)
-        filters.append(f"[{prev_label}][{i}:v]xfade=transition=fade:duration={fade}:offset={offset}[v0{i}]")
+        filters.append(
+            f"[{prev_label}][{i}:v]xfade=transition=fade:duration={fade}:offset={offset}[v0{i}]"
+        )
         prev_label = f"v0{i}"
         total += durs[i]
 
     filter_complex = ";".join(filters)
 
     cmd += [
-        "-filter_complex", filter_complex,
-        "-map", f"[{prev_label}]",
-        "-r", "30",
-        "-pix_fmt", "yuv420p",
-        out_path
+        "-filter_complex",
+        filter_complex,
+        "-map",
+        f"[{prev_label}]",
+        "-r",
+        "30",
+        "-pix_fmt",
+        "yuv420p",
+        out_path,
     ]
 
     subprocess.check_call(cmd)
@@ -98,7 +121,7 @@ def _veo3_fast_image_to_video(
     image_path: str,
     prompt: str,
     resolution: str = "720p",
-    aspect_ratio: str = "9:16"
+    aspect_ratio: str = "9:16",
 ) -> str:
     with open(image_path, "rb") as f:
         output = replicate.run(
@@ -107,8 +130,8 @@ def _veo3_fast_image_to_video(
                 "image": f,
                 "prompt": prompt,
                 "resolution": resolution,
-                "aspect_ratio": aspect_ratio
-            }
+                "aspect_ratio": aspect_ratio,
+            },
         )
 
     if isinstance(output, str):
@@ -130,7 +153,6 @@ def _normalize_scenes_list(plan: Any) -> List[Dict[str, Any]]:
             return plan["scenes"]
         if "ad_plan" in plan and isinstance(plan["ad_plan"], list):
             return plan["ad_plan"]
-        # 혹시 plan 자체가 scene 1개를 담는 dict인 경우
         if all(k in plan for k in ["nano_image_prompt", "video_prompt"]):
             return [plan]
         raise ValueError("Unexpected plan json structure (missing scenes/ad_plan).")
@@ -140,9 +162,6 @@ def _normalize_scenes_list(plan: Any) -> List[Dict[str, Any]]:
 
 
 def _get_scene_id(scene: Dict[str, Any], fallback: int) -> int:
-    """
-    원본 코드에서는 scene_number를 쓰는데, Gemini는 id로 줄 때도 있어서 보정.
-    """
     sid = scene.get("scene_number") or scene.get("id") or fallback
     try:
         return int(sid)
@@ -157,19 +176,19 @@ async def generate_video_for_product(
     product_id: int,
     req,
     product_image: UploadFile,
-    root_dir: Path
 ) -> Path:
     """
-    FastAPI 라우터에서 호출하는 "영상 생성 서비스 함수"
+    main.py에서 이렇게 호출하는 전제:
 
-    입력:
-      - product_id
-      - req: (pydantic 모델) food_name, food_type, ad_concept, ad_req
-      - product_image: UploadFile
-      - root_dir: outputs 경로 (예: Path("outputs"))
+      generate_video_for_product(product_id=..., req=req, product_image=file)
 
-    출력:
-      - outputs/products/{product_id}/video.mp4 Path
+    저장 위치:
+      - ai/{product_id}/video/
+          - product.png
+          - video_plan.json
+          - scene_01.png ...
+          - scene_01.mp4 ...
+          - video.mp4 (최종)
     """
 
     # -----------------------------------------
@@ -187,15 +206,18 @@ async def generate_video_for_product(
     gclient = genai.Client(api_key=GEMINI_KEY)
 
     # -----------------------------------------
-    # 1) Save uploaded image
+    # 1) Output dir 결정 (서비스 내부에서)
     # -----------------------------------------
-    out_dir = _ensure_dir(root_dir / "products" / str(product_id))
+    product_dir = _ensure_product_dir(product_id)
+    out_dir = product_dir
 
+    # -----------------------------------------
+    # 2) Save uploaded image
+    # -----------------------------------------
     img_bytes = await product_image.read()
     if not img_bytes:
         raise HTTPException(status_code=400, detail="empty product_image")
 
-    # 확장자 처리
     filename = product_image.filename or "product.png"
     suffix = Path(filename).suffix.lower()
     if suffix not in [".png", ".jpg", ".jpeg", ".webp"]:
@@ -208,7 +230,7 @@ async def generate_video_for_product(
     ref_bytes = img_bytes
 
     # -----------------------------------------
-    # 2) Gemini: Create plan JSON
+    # 3) Gemini: Create plan JSON
     # -----------------------------------------
     SYSTEM = """너는 숏츠 광고 감독이다.
 목표: 10초 내외 숏츠 광고를 3개의 씬으로 구성한다.
@@ -235,22 +257,23 @@ async def generate_video_for_product(
         resp = gclient.models.generate_content(
             model="gemini-2.5-flash",
             contents=[
-                types.Content(role="user", parts=[
-                    types.Part(text=SYSTEM + "\n\n" + plan_prompt)
-                ])
+                types.Content(
+                    role="user",
+                    parts=[types.Part(text=SYSTEM + "\n\n" + plan_prompt)],
+                )
             ],
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json"
-            )
+            config=types.GenerateContentConfig(response_mime_type="application/json"),
         )
         plan = json.loads(resp.text)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"gemini plan generation failed: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"gemini plan generation failed: {e}"
+        )
 
-    # 저장 (디버깅/검수용)
+    # 저장
     (out_dir / "video_plan.json").write_text(
         json.dumps(plan, ensure_ascii=False, indent=2),
-        encoding="utf-8"
+        encoding="utf-8",
     )
 
     # scenes normalize
@@ -260,7 +283,7 @@ async def generate_video_for_product(
         raise HTTPException(status_code=500, detail=f"invalid plan json: {e}")
 
     # -----------------------------------------
-    # 3) Gemini: Generate scene images
+    # 4) Gemini: Generate scene images
     # -----------------------------------------
     STRICT_IMAGE_RULES = """
 [엄격 규칙 - 반드시 준수]
@@ -273,41 +296,52 @@ async def generate_video_for_product(
     img_paths: List[str] = []
     for idx, sc in enumerate(scenes_list):
         sid = _get_scene_id(sc, fallback=idx + 1)
-
-        nano_prompt = (sc["nano_image_prompt"].strip() + "\n\n" + STRICT_IMAGE_RULES).strip()
+        nano_prompt = (
+            sc["nano_image_prompt"].strip() + "\n\n" + STRICT_IMAGE_RULES
+        ).strip()
 
         try:
             img_resp = gclient.models.generate_content(
                 model="gemini-2.5-flash-image",
                 contents=[
-                    types.Content(role="user", parts=[
-                        types.Part(text=nano_prompt),
-                        types.Part.from_bytes(data=ref_bytes, mime_type=ref_mime),
-                    ])
+                    types.Content(
+                        role="user",
+                        parts=[
+                            types.Part(text=nano_prompt),
+                            types.Part.from_bytes(data=ref_bytes, mime_type=ref_mime),
+                        ],
+                    )
                 ],
-                config=types.GenerateContentConfig(response_modalities=["IMAGE"])
+                config=types.GenerateContentConfig(response_modalities=["IMAGE"]),
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"gemini image generation failed (scene {sid}): {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"gemini image generation failed (scene {sid}): {e}",
+            )
 
         out_bytes = None
         try:
             for p in img_resp.candidates[0].content.parts:
-                if getattr(p, "inline_data", None) and p.inline_data.mime_type.startswith("image/"):
+                if getattr(
+                    p, "inline_data", None
+                ) and p.inline_data.mime_type.startswith("image/"):
                     out_bytes = p.inline_data.data
                     break
         except Exception:
             out_bytes = None
 
         if out_bytes is None:
-            raise HTTPException(status_code=500, detail=f"no image output from gemini (scene {sid})")
+            raise HTTPException(
+                status_code=500, detail=f"no image output from gemini (scene {sid})"
+            )
 
         out_path = out_dir / f"scene_{sid:02d}.png"
         Image.open(io.BytesIO(out_bytes)).save(out_path)
         img_paths.append(str(out_path))
 
     # -----------------------------------------
-    # 4) Replicate: Generate scene videos
+    # 5) Replicate: Generate scene videos
     # -----------------------------------------
     STRICT_VIDEO_RULES = """
 [Strict constraints]
@@ -320,7 +354,6 @@ async def generate_video_for_product(
     video_paths: List[str] = []
     for idx, sc in enumerate(scenes_list):
         sid = _get_scene_id(sc, fallback=idx + 1)
-
         prompt_vid = (sc["video_prompt"].strip() + "\n\n" + STRICT_VIDEO_RULES).strip()
 
         try:
@@ -328,27 +361,35 @@ async def generate_video_for_product(
                 img_paths[idx],
                 prompt_vid,
                 resolution="720p",
-                aspect_ratio="9:16"
+                aspect_ratio="9:16",
             )
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"replicate veo generation failed (scene {sid}): {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"replicate veo generation failed (scene {sid}): {e}",
+            )
 
         out_path = out_dir / f"scene_{sid:02d}.mp4"
         try:
             _download(url, out_path)
         except Exception as e:
-            raise HTTPException(status_code=502, detail=f"download veo result failed (scene {sid}): {e}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"download veo result failed (scene {sid}): {e}",
+            )
 
         video_paths.append(str(out_path))
 
     # -----------------------------------------
-    # 5) FFmpeg: concat with xfade -> final video.mp4
+    # 6) FFmpeg: concat with xfade -> final video.mp4
     # -----------------------------------------
     final_mp4 = out_dir / "video.mp4"
     try:
         _concat_with_xfade(video_paths, str(final_mp4), fade=0.5)
     except FileNotFoundError:
-        raise HTTPException(status_code=500, detail="ffmpeg/ffprobe not installed on server")
+        raise HTTPException(
+            status_code=500, detail="ffmpeg/ffprobe not installed on server"
+        )
     except subprocess.CalledProcessError as e:
         raise HTTPException(status_code=500, detail=f"ffmpeg concat failed: {e}")
     except Exception as e:

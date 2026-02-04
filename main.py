@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from pathlib import Path
 import shutil
+from typing import Optional
 
 # 전개도 생성 모듈
 from services.dieline_generate import DielineAnalyzer
@@ -14,44 +15,61 @@ from services.banner_generate import AdBannerGenerator
 # 영상 생성 모듈
 from services.video_generate import generate_video_for_product
 
+# ✅ SNS 이미지 생성 모듈 (새로 추가)
+from services.sns_image_generate import SNSImageGenerator
+
 app = FastAPI(title="AI Product Media Server")
 
-ROOT = Path("outputs").resolve()
-ALLOWED = {"package", "video", "poster", "dieline", "banner"}
+
+# ✅ sns / sns_background 추가
+ALLOWED = {"package", "video", "poster", "dieline", "banner", "sns", "sns_background"}
 
 
 # ===============================================================================================================================================================================================================
 #  경로 체크
 # ===============================================================================================================================================================================================================
 def ensure_product_dir(product_id: int) -> Path:
-    product_dir = ROOT / "products" / str(product_id)
+    product_dir = str(product_id)
     product_dir.mkdir(parents=True, exist_ok=True)
     return product_dir
-
-
-def ensure_job_dir(product_id: int, job_name: str = "default") -> Path:
-    job_dir = ROOT / "products" / str(product_id) / "jobs" / job_name
-    job_dir.mkdir(parents=True, exist_ok=True)
-    return job_dir
 
 
 # ===============================================================================================================================================================================================================
 # 1) 이미지 조회 API
 # ===============================================================================================================================================================================================================
-@app.get("/ai/products/{product_id}/images/{img_type}")
+@app.get("/ai/{product_id}/images/{img_type}")
 def get_img(product_id: int, img_type: str):
     if img_type not in ALLOWED:
         raise HTTPException(status_code=400, detail="invalid type")
-    path = ROOT / "products" / str(product_id) / f"{img_type}.png"
+
+    # 이미지 타입별 파일명 매핑
+    filename_map = {
+        "package": "package.png",
+        "poster": "poster.png",
+        "dieline": "dieline.png",
+        "banner": "banner.png",
+        # ✅ sns 결과
+        "sns": "sns.png",
+        "sns_background": "sns_background.png",
+    }
+
+    if img_type == "video":
+        # 기존 코드가 이미지 전용이므로 video는 제외하거나 별도 endpoint 사용 권장
+        raise HTTPException(status_code=400, detail="video is not an image type")
+
+    filename = filename_map.get(img_type, f"{img_type}.png")
+    path = str(product_id) / filename
+
     if not path.exists():
         raise HTTPException(status_code=404, detail="not found")
+
     return FileResponse(path, media_type="image/png")
 
 
 # ===============================================================================================================================================================================================================
 # 2) 더미 패키지 생성 API
 # ===============================================================================================================================================================================================================
-@app.post("/ai/products/{product_id}/package")
+@app.post("/ai/{product_id}/package")
 async def create_package_dummy(product_id: int, file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="only image upload allowed")
@@ -70,7 +88,7 @@ class BannerRequest(BaseModel):
     typo_text: str = Field(..., example="손이가요 손이가.")
 
 
-@app.post("/ai/products/{product_id}/banner")
+@app.post("/ai/{product_id}/banner")
 def create_banner_from_file(
     product_id: int,
     headline: str = Form(...),
@@ -109,7 +127,7 @@ class VideoGenRequest(BaseModel):
     )
 
 
-@app.post("/ai/products/{product_id}/video")
+@app.post("/ai/{product_id}/video")
 async def create_video(
     product_id: int, req: VideoGenRequest, file: UploadFile = File(...)
 ):
@@ -122,7 +140,7 @@ async def create_video(
 
     try:
         final_mp4_path = await generate_video_for_product(
-            product_id=product_id, req=req, product_image=file, root_dir=ROOT
+            product_id=product_id, req=req, product_image=file
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"video generation failed: {e}")
@@ -133,9 +151,9 @@ async def create_video(
 
 
 # ===============================================================================================================================================================================================================
-# 5) 전개도(Dieline) 분석 API 
+# 5) 전개도(Dieline) 분석 API
 # ===============================================================================================================================================================================================================
-@app.post("/ai/products/{product_id}/dieline")
+@app.post("/ai/{product_id}/dieline")
 def analyze_dieline(product_id: int, file: UploadFile = File(...)):
     # 1. 파일 검증
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -151,17 +169,75 @@ def analyze_dieline(product_id: int, file: UploadFile = File(...)):
     # 3. 분석 모듈 실행
     analyzer = DielineAnalyzer()
     try:
-        # analyze 메서드가 결과 Dict를 반환하고, 내부적으로 이미지도 저장함
         result = analyzer.analyze(image_path=str(input_path), output_dir=product_dir)
-
-        # 결과에 이미지 다운로드 URL 힌트 추가 (선택사항)
-        result["result_image_url"] = f"/ai/products/{product_id}/images/dieline"
-
+        result["result_image_url"] = f"/ai/{product_id}/images/dieline"
         return result
 
     except ValueError as ve:
-        # 분석 실패 (점선 인식 실패 등)
         raise HTTPException(status_code=400, detail=f"Analysis failed: {str(ve)}")
     except Exception as e:
-        # 기타 서버 에러
         raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
+
+
+# ===============================================================================================================================================================================================================
+# 6) ✅ SNS 인스타 광고 이미지 생성 API (새 기능)
+# ===============================================================================================================================================================================================================
+class SNSGenRequest(BaseModel):
+    main_text: str = Field(..., example="나야 새우깡")
+    sub_text: str = Field("", example="바삭함의 정석")
+    preset: Optional[str] = Field(None, example="ocean_sunset")
+    custom_prompt: Optional[str] = Field(
+        None, example="A dramatic night beach scene with crashing waves..."
+    )
+    save_background: bool = Field(True, example=True)
+
+
+@app.post("/ai/{product_id}/sns")
+def create_sns_image(product_id: int, req: SNSGenRequest):
+    """
+    입력:
+      - main_text, sub_text
+      - preset 또는 custom_prompt
+    출력:
+      - sns_background.png (옵션)
+      - sns.png (최종 1080x1350)
+    """
+    product_dir = ensure_product_dir(product_id)
+
+    # 상품 이미지는 기존처럼 package.png를 사용
+    product_path = product_dir / "package.png"
+    if not product_path.exists():
+        raise HTTPException(
+            status_code=404, detail="package.png not found. Upload package first."
+        )
+
+    background_path = product_dir / "sns_background.png"
+    final_path = product_dir / "sns.png"
+
+    try:
+        generator = SNSImageGenerator()  # 내부에서 GEMINI_API_KEY 사용
+        generator.generate(
+            product_path=str(product_path),
+            main_text=req.main_text,
+            sub_text=req.sub_text or "",
+            preset=req.preset,
+            custom_prompt=req.custom_prompt,
+            output_path=str(final_path),
+            save_background=req.save_background,
+            background_output_path=(
+                str(background_path) if req.save_background else None
+            ),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"SNS generation failed: {e}")
+
+    return {
+        "product_id": product_id,
+        "sns_image_url": f"/ai/{product_id}/images/sns",
+        "background_image_url": (
+            f"/ai/{product_id}/images/sns_background"
+            if req.save_background
+            else None
+        ),
+        "output_path": str(final_path),
+    }
