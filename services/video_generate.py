@@ -22,7 +22,8 @@ import replicate
 # =========================================================
 # Path / Storage
 # =========================================================
-BASE_DIR = Path("ai")  # ✅ 저장 루트: ai/{product_id}/...
+BASE_DIR = Path(__file__).resolve().parent.parent  # services/ 기준이면 상위로
+AI_DIR = BASE_DIR / "ai"
 
 
 def _ensure_product_dir(product_id: int) -> Path:

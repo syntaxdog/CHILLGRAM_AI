@@ -34,8 +34,8 @@ BASE_DIR = Path(__file__).resolve().parent
 AI_DIR = BASE_DIR / "ai"
 
 
-def ensure_product_dir(product_id: int) -> Path:
-    product_dir = AI_DIR / str(product_id)
+def ensure_product_dir(project_id: int) -> Path:
+    product_dir = AI_DIR / str(project_id)
     product_dir.mkdir(parents=True, exist_ok=True)
     return product_dir
 
@@ -43,8 +43,8 @@ def ensure_product_dir(product_id: int) -> Path:
 # ===============================================================================================================================================================================================================
 # 1) 이미지 조회 API
 # ===============================================================================================================================================================================================================
-@app.get("/ai/{product_id}/images/{img_type}")
-def get_img(product_id: int, img_type: str):
+@app.get("/ai/{project_id}/images/{img_type}")
+def get_img(project_id: int, img_type: str):
     if img_type not in ALLOWED:
         raise HTTPException(status_code=400, detail="invalid type")
 
@@ -61,7 +61,7 @@ def get_img(product_id: int, img_type: str):
         raise HTTPException(status_code=400, detail="video is not an image type")
 
     filename = filename_map.get(img_type, f"{img_type}.png")
-    product_dir = ensure_product_dir(product_id)
+    product_dir = ensure_product_dir(project_id)
     path = product_dir / filename
 
     if not path.exists():
@@ -78,13 +78,13 @@ class BannerRequest(BaseModel):
     typo_text: str = Field(..., example="손이가요 손이가.")
 
 
-@app.post("/ai/{product_id}/banner")
+@app.post("/ai/{project_id}/banner")
 def create_banner_from_file(
-    product_id: int,
+    project_id: int,
     headline: str = Form(...),
     typo_text: str = Form(...),
 ):
-    product_dir = ensure_product_dir(product_id)
+    product_dir = ensure_product_dir(project_id)
     input_path = product_dir / "package.png"
     output_path = product_dir / "banner.png"
 
@@ -116,11 +116,11 @@ class VideoGenRequest(BaseModel):
     ad_req: str = Field(..., example="바삭함, 중독성, 가벼운 간식")
 
 
-@app.post("/ai/{product_id}/video")
+@app.post("/ai/{project_id}/video")
 async def create_video(
-    product_id: int, req: VideoGenRequest, file: UploadFile = File(...)
+    project_id: int, req: VideoGenRequest, file: UploadFile = File(...)
 ):
-    product_dir = ensure_product_dir(product_id)
+    product_dir = ensure_product_dir(project_id)
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="only image upload allowed")
     package_path = product_dir / "package.png"
@@ -129,7 +129,7 @@ async def create_video(
 
     try:
         final_mp4_path = await generate_video_for_product(
-            product_id=product_id, req=req, product_image=file
+            project_id=project_id, req=req, product_image=file
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"video generation failed: {e}")
@@ -142,12 +142,12 @@ async def create_video(
 # ===============================================================================================================================================================================================================
 # 4) 전개도(Dieline) 분석 API
 # ===============================================================================================================================================================================================================
-@app.post("/ai/{product_id}/dieline")
-def analyze_dieline(product_id: int, file: UploadFile = File(...)):
+@app.post("/ai/{project_id}/dieline")
+def analyze_dieline(project_id: int, file: UploadFile = File(...)):
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Only image files are allowed")
 
-    product_dir = ensure_product_dir(product_id)
+    product_dir = ensure_product_dir(project_id)
     input_path = product_dir / "dieline_input.png"
 
     with input_path.open("wb") as buffer:
@@ -156,7 +156,7 @@ def analyze_dieline(product_id: int, file: UploadFile = File(...)):
     analyzer = DielineAnalyzer()
     try:
         result = analyzer.analyze(image_path=str(input_path), output_dir=product_dir)
-        result["result_image_url"] = f"/ai/{product_id}/images/dieline"
+        result["result_image_url"] = f"/ai/{project_id}/images/dieline"
         return result
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=f"Analysis failed: {str(ve)}")
@@ -177,9 +177,9 @@ class SNSGenRequest(BaseModel):
     save_background: bool = Field(True, example=True)
 
 
-@app.post("/ai/{product_id}/sns")
-def create_sns_image(product_id: int, req: SNSGenRequest):
-    product_dir = ensure_product_dir(product_id)
+@app.post("/ai/{project_id}/sns")
+def create_sns_image(project_id: int, req: SNSGenRequest):
+    product_dir = ensure_product_dir(project_id)
     product_path = product_dir / "package.png"
     if not product_path.exists():
         raise HTTPException(
@@ -207,10 +207,10 @@ def create_sns_image(product_id: int, req: SNSGenRequest):
         raise HTTPException(status_code=500, detail=f"SNS generation failed: {e}")
 
     return {
-        "product_id": product_id,
-        "sns_image_url": f"/ai/{product_id}/images/sns",
+        "project_id": project_id,
+        "sns_image_url": f"/ai/{project_id}/images/sns",
         "background_image_url": (
-            f"/ai/{product_id}/images/sns_background" if req.save_background else None
+            f"/ai/{project_id}/images/sns_background" if req.save_background else None
         ),
         "output_path": str(final_path),
     }
@@ -219,9 +219,9 @@ def create_sns_image(product_id: int, req: SNSGenRequest):
 # ===============================================================================================================================================================================================================
 # 6) 패키지 이미지 생성 API
 # ===============================================================================================================================================================================================================
-@app.post("/ai/{product_id}/package")
+@app.post("/ai/{project_id}/package")
 async def create_package_with_gemini(
-    product_id: int,
+    project_id: int,
     instruction: str = Form(...),
     file: UploadFile = File(...),
 ):
@@ -229,7 +229,7 @@ async def create_package_with_gemini(
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="only image upload allowed")
 
-    product_dir = ensure_product_dir(product_id)
+    product_dir = ensure_product_dir(project_id)
 
     # 2. 업로드 원본 저장
     input_path = product_dir / "package_input.png"
@@ -253,3 +253,10 @@ async def create_package_with_gemini(
 
     # 5. 생성된 이미지 반환
     return FileResponse(output_path, media_type="image/png", filename="package.png")
+
+
+
+
+@app.get("/hello")
+def hello():
+    return {"message":"hello"}
