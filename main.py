@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 from pathlib import Path
 import shutil
 from typing import Optional
+import os
 
 # 전개도 생성 모듈
 from services.dieline_generate import DielineAnalyzer
@@ -20,6 +21,11 @@ from services.sns_image_generate import SNSImageGenerator
 
 # 패키지 이미지 생성
 from services.package_generate import PackageGenerator
+
+from dotenv import load_dotenv
+
+load_dotenv()
+API_KEY = os.gentenv("GEMINI_API_KEY")
 
 app = FastAPI(title="AI Product Media Server")
 
@@ -97,7 +103,7 @@ def create_banner_from_file(
 
     try:
         # API Key는 BannerGenerator 내부 혹은 환경변수 관리 권장
-        generator = AdBannerGenerator(api_key="김채환")
+        generator = AdBannerGenerator(api_key=API_KEY)
         generator.process(
             image_path=str(input_path),
             headline=headline,
