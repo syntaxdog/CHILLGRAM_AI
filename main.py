@@ -25,7 +25,7 @@ from services.package_generate import PackageGenerator
 from dotenv import load_dotenv
 
 load_dotenv()
-API_KEY = os.gentenv("GEMINI_API_KEY")
+API_KEY = os.getenv("GEMINI_API_KEY")
 
 app = FastAPI(title="AI Product Media Server")
 
@@ -177,12 +177,52 @@ def analyze_dieline(project_id: int, file: UploadFile = File(...)):
 # ===============================================================================================================================================================================================================
 # 5) SNS 인스타 광고 이미지 생성 API
 # ===============================================================================================================================================================================================================
+# curl 호출 예시:
+# curl -X POST "http://localhost:8000/ai/123/sns" \
+#   -H "Content-Type: application/json" \
+#   -d '{
+#     "main_text": "나야 새우깡",
+#     "sub_text": "바삭함의 정석",
+#     "guideline": "브랜드 컬러는 빨강과 노랑을 사용하고, 활기찬 느낌을 강조하세요.",
+#     "save_background": true
+#   }'
+#
+# 필수 INPUT:
+#   - main_text (str): SNS 이미지에 들어갈 메인 텍스트 (필수)
+#
+# 선택 INPUT:
+#   - sub_text (str): 서브 텍스트, 기본값 ""
+#   - guideline (str): 팀에서 제공하는 가이드라인 프롬프트 (배경 스타일, 브랜드 컬러, 콘셉트 등)
+#   - custom_prompt (str): 배경 생성용 커스텀 프롬프트 (guideline이 없을 때만 사용됨)
+#   - preset (str): 배경 프리셋 이름 (예: "ocean_sunset"), guideline과 custom_prompt 둘 다 없을 때 사용
+#   - save_background (bool): 배경 이미지 별도 저장 여부, 기본값 True
+#
+# 프롬프트 우선순위:
+#   1. guideline (최우선) → 팀에서 제공하는 가이드라인 사용
+#   2. custom_prompt → guideline 없을 때 커스텀 프롬프트 사용
+#   3. preset (기본) → 둘 다 없을 때 내장 프리셋 사용
+#   ※ 어떤 경우든 PRODUCT_SPACE_INSTRUCTION과 typography_instruction은 자동으로 추가됩니다.
+#
+# 사전 요구사항:
+#   - package.png가 먼저 생성되어 있어야 함 (패키지 이미지 업로드 또는 생성 필요)
+#
+# 응답 형식:
+#   {
+#     "project_id": 123,
+#     "sns_image_url": "/ai/123/images/sns",
+#     "background_image_url": "/ai/123/images/sns_background",
+#     "output_path": "ai/123/sns.png"
+#   }
+# ===============================================================================================================================================================================================================
 class SNSGenRequest(BaseModel):
     main_text: str = Field(..., example="나야 새우깡")
     sub_text: str = Field("", example="바삭함의 정석")
     preset: Optional[str] = Field(None, example="ocean_sunset")
     custom_prompt: Optional[str] = Field(
         None, example="A dramatic night beach scene..."
+    )
+    guideline: Optional[str] = Field(
+        None, example="브랜드 컬러는 빨강과 노랑을 사용하고, 활기찬 느낌을 강조하세요."
     )
     save_background: bool = Field(True, example=True)
 
@@ -207,6 +247,7 @@ def create_sns_image(project_id: int, req: SNSGenRequest):
             sub_text=req.sub_text or "",
             preset=req.preset,
             custom_prompt=req.custom_prompt,
+            guideline=req.guideline,
             output_path=str(final_path),
             save_background=req.save_background,
             background_output_path=(

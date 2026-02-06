@@ -117,17 +117,32 @@ class SNSImageGenerator:
         sub_text: str = "",
         preset: Optional[str] = None,
         custom_prompt: Optional[str] = None,
+        guideline: Optional[str] = None,
     ) -> Image.Image:
-        """Gemini로 배경 + 타이포그래피 생성"""
+        """Gemini로 배경 + 타이포그래피 생성
 
-        if custom_prompt:
+        Args:
+            product_image: 제품 이미지
+            main_text: 메인 텍스트
+            sub_text: 서브 텍스트
+            preset: 프리셋 이름
+            custom_prompt: 커스텀 프롬프트
+            guideline: 다른 팀에서 제공하는 필수 가이드라인 프롬프트
+        """
+
+        # 프롬프트 우선순위: guideline > custom_prompt > preset
+        if guideline:
+            base_prompt = guideline
+            print("  Using team guideline (with auto product-space and typography instruction)")
+        elif custom_prompt:
             base_prompt = custom_prompt
-            print("  Using custom prompt (with auto product-space instruction)")
+            print("  Using custom prompt (with auto product-space and typography instruction)")
         else:
             preset = preset or "ocean_sunset"
             base_prompt = PRESETS.get(preset, PRESETS["ocean_sunset"])
             print(f"  Generating background (preset: {preset})")
 
+        # 타이포그래피 지침 (필수)
         typography_instruction = f"""
 TYPOGRAPHY REQUIREMENTS:
 - Add elegant text at the BOTTOM of the image (lower 15% area)
@@ -137,9 +152,11 @@ TYPOGRAPHY REQUIREMENTS:
 - Make typography look premium and high-end
 - Modern, clean Korean font style"""
 
-        if custom_prompt:
+        # guideline 또는 custom_prompt 사용 시: base_prompt + 필수 지침들
+        if guideline or custom_prompt:
             prompt = f"{base_prompt}{PRODUCT_SPACE_INSTRUCTION}{typography_instruction}"
         else:
+            # preset 사용 시: preset + 타이포 + 추가 안내
             prompt = f"""{base_prompt}
 {typography_instruction}
 
@@ -357,6 +374,7 @@ IMPORTANT:
         sub_text: str = "",
         preset: Optional[str] = None,
         custom_prompt: Optional[str] = None,
+        guideline: Optional[str] = None,
         output_path: Optional[str] = None,
         save_background: bool = False,
         background_output_path: Optional[str] = None,
@@ -369,6 +387,7 @@ IMPORTANT:
             sub_text: 서브 텍스트
             preset: 프리셋 이름 (custom_prompt 없을 때 사용)
             custom_prompt: 커스텀 프롬프트 (있으면 preset 무시)
+            guideline: 다른 팀에서 제공하는 필수 가이드라인 프롬프트
             output_path: 최종 결과 저장 경로 (sns.png)
             save_background: 배경 이미지 별도 저장 여부
             background_output_path: 배경 저장 경로 (sns_background.png)
@@ -385,7 +404,7 @@ IMPORTANT:
         # 배경 생성
         print("\n[2/3] Generating background + typography...")
         background = self.generate_background(
-            product, main_text, sub_text, preset=preset, custom_prompt=custom_prompt
+            product, main_text, sub_text, preset=preset, custom_prompt=custom_prompt, guideline=guideline
         )
         print(f"  Background: {background.size}")
 
